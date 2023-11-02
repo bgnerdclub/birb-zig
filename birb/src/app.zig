@@ -35,56 +35,109 @@ test "incrementing type tracker with primitives" {
     try std.testing.expect(comptime tracker.getId(u8) == 0);
 }
 
-const EventBus = struct {
-    const Listener = struct { func: *const fn (*anyopaque, *anyopaque) *anyopaque, data: *anyopaque };
+const RequestBus = struct {
+    const Handler = struct { func: *const fn (*anyopaque, *anyopaque) anyerror!*anyopaque, data: *anyopaque };
 
     allocator: std.mem.Allocator,
-    listeners: std.AutoHashMap(usize, std.ArrayList(Listener)),
+    handlers: std.AutoHashMap(usize, std.ArrayList(Handler)),
 
-    pub fn init(allocator: std.mem.Allocator) EventBus {
-        const listeners = std.AutoHashMap(usize, std.ArrayList(Listener)).init(allocator);
-        return EventBus{ .allocator = allocator, .listeners = listeners };
+    pub fn init(allocator: std.mem.Allocator) RequestBus {
+        const handlers = std.AutoHashMap(usize, std.ArrayList(Handler)).init(allocator);
+        return RequestBus{ .allocator = allocator, .handlers = handlers };
     }
 
-    pub fn deinit(self: *EventBus) void {
-        var values = self.listeners.valueIterator();
+    pub fn deinit(self: *RequestBus) void {
+        var values = self.handlers.valueIterator();
         while (values.next()) |value| {
             value.deinit();
         }
-        self.listeners.deinit();
+        self.handlers.deinit();
     }
 
-    pub fn submit(self: *EventBus, event: anytype) !std.ArrayList(@TypeOf(event).Response) {
+    pub fn submit(self: *RequestBus, event: anytype) !std.ArrayList(@TypeOf(event).Response) {
         const id = typeId(@TypeOf(event));
 
-        const listeners = self.listeners.get(id);
-        const responseIsVoid = comptime @TypeOf(event).Response == void;
+        const handlers = self.handlers.get(id);
         var responses = std.ArrayList(@TypeOf(event).Response).init(self.allocator);
-        if (listeners) |*l| {
-            for (l.items) |*listener| {
-                std.debug.print("{*}\n", .{listener.data});
-                var response = listener.func(listener.data, @ptrCast(@constCast(&event)));
-                if (!responseIsVoid) {
-                    try responses.append(@ptrCast(response));
-                }
+
+        if (handlers) |*h| {
+            for (h.items) |*handler| {
+                var response = try handler.func(handler.data, @ptrCast(@constCast(&event)));
+                try responses.append(@ptrCast(@alignCast(response)));
             }
         }
+
         return responses;
     }
 
-    pub fn register(self: *EventBus, func: anytype, data: @typeInfo(@TypeOf(func)).Fn.params[0].type.?) !void {
-        std.debug.print("register {*}\n", .{data});
+    pub fn register(self: *RequestBus, func: anytype, data: @typeInfo(@TypeOf(func)).Fn.params[0].type.?) !void {
+        const Wrapper = struct {
+            fn handler(d: *anyopaque, e: *anyopaque) !*anyopaque {
+                return @constCast(try func(@ptrCast(@alignCast(d)), @ptrCast(@alignCast(e))));
+            }
+        };
+
         const id = typeId(@typeInfo(@typeInfo(@TypeOf(func)).Fn.params[1].type.?).Pointer.child);
-        const listener = Listener{ .func = @ptrCast(&func), .data = data };
-        var listeners = self.listeners.get(id);
-        if (listeners) |*l| {
-            try l.append(listener);
+        const handler = Handler{ .func = &Wrapper.handler, .data = data };
+        var handlers = self.handlers.get(id);
+        if (handlers) |*h| {
+            try h.append(handler);
         } else {
-            var l = std.ArrayList(Listener).init(self.allocator);
-            try l.append(listener);
-            try self.listeners.put(id, l);
+            var h = std.ArrayList(Handler).init(self.allocator);
+            try h.append(handler);
+            try self.handlers.put(id, h);
         }
-        std.debug.print("register {*}\n", .{@as(@typeInfo(@TypeOf(func)).Fn.params[0].type.?, @ptrCast(@alignCast(listener.data)))});
+    }
+};
+
+const EventBus = struct {
+    const Handler = struct { func: *const fn (*anyopaque, *anyopaque) anyerror!void, data: *anyopaque };
+
+    allocator: std.mem.Allocator,
+    handlers: std.AutoHashMap(usize, std.ArrayList(Handler)),
+
+    pub fn init(allocator: std.mem.Allocator) EventBus {
+        const handlers = std.AutoHashMap(usize, std.ArrayList(Handler)).init(allocator);
+        return EventBus{ .allocator = allocator, .handlers = handlers };
+    }
+
+    pub fn deinit(self: *EventBus) void {
+        var values = self.handlers.valueIterator();
+        while (values.next()) |value| {
+            value.deinit();
+        }
+        self.handlers.deinit();
+    }
+
+    pub fn submit(self: *EventBus, event: anytype) !void {
+        const id = typeId(@TypeOf(event));
+
+        const handlers = self.handlers.get(id);
+
+        if (handlers) |*h| {
+            for (h.items) |*handler| {
+                try handler.func(handler.data, @ptrCast(@constCast(&event)));
+            }
+        }
+    }
+
+    pub fn register(self: *EventBus, func: anytype, data: @typeInfo(@TypeOf(func)).Fn.params[0].type.?) !void {
+        const Wrapper = struct {
+            fn handler(d: *anyopaque, e: *anyopaque) !void {
+                try func(@ptrCast(@alignCast(d)), @ptrCast(@alignCast(e)));
+            }
+        };
+
+        const id = typeId(@typeInfo(@typeInfo(@TypeOf(func)).Fn.params[1].type.?).Pointer.child);
+        const handler = Handler{ .func = &Wrapper.handler, .data = data };
+        var handlers = self.handlers.get(id);
+        if (handlers) |*h| {
+            try h.append(handler);
+        } else {
+            var h = std.ArrayList(Handler).init(self.allocator);
+            try h.append(handler);
+            try self.handlers.put(id, h);
+        }
     }
 };
 
@@ -130,13 +183,15 @@ pub const App = struct {
     systems: std.ArrayList(SystemClosure),
     modules: std.ArrayList(ModuleClosure),
     events: EventBus,
+    requests: RequestBus,
 
     pub fn init(allocator: std.mem.Allocator) Self {
         const entities = std.ArrayList(*anyopaque).init(allocator);
         const systems = std.ArrayList(SystemClosure).init(allocator);
         const modules = std.ArrayList(ModuleClosure).init(allocator);
         const events = EventBus.init(allocator);
-        return Self{ .allocator = allocator, .entities = entities, .systems = systems, .modules = modules, .events = events };
+        const requests = RequestBus.init(allocator);
+        return Self{ .allocator = allocator, .entities = entities, .systems = systems, .modules = modules, .events = events, .requests = requests };
     }
 
     pub fn deinit(self: *Self) void {
@@ -206,4 +261,8 @@ pub const App = struct {
             }
         }
     }
+};
+
+pub const AppEvent = struct {
+    pub const Stop = struct {};
 };

@@ -3,6 +3,7 @@ const WindowEvent = @import("window.zig").WindowEvent;
 const Window = @import("window.zig").Window;
 const glfw = @import("mach-glfw");
 const App = @import("app.zig").App;
+const AppEvent = @import("app.zig").AppEvent;
 const String = @import("string.zig").String;
 
 pub const WindowModule = struct {
@@ -15,17 +16,20 @@ pub const WindowModule = struct {
         std.log.err("glfw: {}: {s}\n", .{ error_code, description });
     }
 
-    fn handle_get_window(module: *WindowModule, _: *WindowEvent.GetWindow) *const Window {
-        var window = .{ .title = module.title.data.items, .size = module.size };
-        return &window;
+    fn handle_get_window(module: *WindowModule, _: *WindowEvent.GetWindow) !*const Window {
+        var window = try module.app.allocator.create(Window);
+        window.* = .{ .title = module.title.data.items, .size = module.size };
+        return window;
     }
 
     fn handle_set_title(module: *WindowModule, event: *WindowEvent.SetTitle) !void {
-        std.debug.print("set title {*}\n", .{module});
-        std.debug.print("set title {*}\n", .{event});
-        //std.debug.print("{s}\n", .{event.title});
-        //try module.title.set(event.title);
-        //module.window.setTitle(&event.title);
+        try module.title.set(event.title);
+
+        const title = try module.app.allocator.alloc(u8, event.title.len + 1);
+        defer module.app.allocator.free(title);
+        @memcpy(title[0..event.title.len], event.title);
+        title[event.title.len] = 0;
+        module.window.setTitle(title[0..(event.title.len) :0]);
     }
 
     pub fn init(module: *WindowModule, app: *App) !void {
@@ -41,8 +45,7 @@ pub const WindowModule = struct {
         };
 
         module.* = WindowModule{ .app = app, .window = window, .title = String.init(app.allocator), .size = @Vector(2, u32){ 640, 480 } };
-        try app.events.register(WindowModule.handle_get_window, module);
-        std.debug.print("module {d}", .{module.size[0]});
+        try app.requests.register(WindowModule.handle_get_window, module);
         try app.events.register(WindowModule.handle_set_title, module);
     }
 
@@ -51,12 +54,14 @@ pub const WindowModule = struct {
         glfw.terminate();
     }
 
-    pub fn start(module: *WindowModule) void {
-        std.debug.print("start {*}\n", .{module});
-    }
+    pub fn start(_: *WindowModule) void {}
 
     pub fn tick(module: *WindowModule) void {
         module.window.swapBuffers();
         glfw.pollEvents();
+
+        if (module.window.shouldClose()) {
+            module.app.events.submit(AppEvent.Stop{}) catch unreachable;
+        }
     }
 };

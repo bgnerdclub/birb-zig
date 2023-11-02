@@ -14,7 +14,5 @@ pub const WindowEvent = struct {
 
     pub const SetTitle = struct {
         title: []const u8,
-
-        pub const Response = void;
     };
 };

@@ -40,8 +40,10 @@ pub fn main() !void {
 
     app.start();
 
-    const event = birb.WindowEvent.SetTitle{ .title = "owo" };
-    _ = try app.events.submit(event);
+    _ = try app.events.submit(birb.WindowEvent.SetTitle{ .title = "amazing window" });
+    const responses = try app.requests.submit(birb.WindowEvent.GetWindow{});
+    const window = responses.items[0];
+    std.debug.print("Width: {d}, Height: {d}\n", .{ window.size[0], window.size[1] });
 
     {
         var i: u32 = 0;
