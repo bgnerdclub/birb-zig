@@ -56,7 +56,7 @@ pub const WindowModule = struct {
 
     pub fn start(_: *WindowModule) void {}
 
-    pub fn tick(module: *WindowModule) void {
+    pub fn run(module: *WindowModule) void {
         module.window.swapBuffers();
         glfw.pollEvents();
 

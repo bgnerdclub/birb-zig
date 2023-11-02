@@ -173,10 +173,12 @@ const SystemClosure = struct {
     system: *anyopaque,
     target: usize,
 };
-const ModuleClosure = struct { start: *const fn (*anyopaque) void, deinit: *const fn (*anyopaque) void, tick: *const fn (*anyopaque) void, module: *anyopaque };
+const ModuleClosure = struct { start: *const fn (*anyopaque) void, deinit: *const fn (*anyopaque) void, run: *const fn (*anyopaque) void, module: *anyopaque };
 
 pub const App = struct {
     const Self = @This();
+
+    const State = enum { unstarted, started, running, finished };
 
     allocator: std.mem.Allocator,
     entities: std.ArrayList(*anyopaque),
@@ -184,13 +186,15 @@ pub const App = struct {
     modules: std.ArrayList(ModuleClosure),
     events: EventBus,
     requests: RequestBus,
+    state: State = State.unstarted,
 
-    pub fn init(allocator: std.mem.Allocator) Self {
+    pub fn init(allocator: std.mem.Allocator) !Self {
         const entities = std.ArrayList(*anyopaque).init(allocator);
         const systems = std.ArrayList(SystemClosure).init(allocator);
         const modules = std.ArrayList(ModuleClosure).init(allocator);
         const events = EventBus.init(allocator);
         const requests = RequestBus.init(allocator);
+
         return Self{ .allocator = allocator, .entities = entities, .systems = systems, .modules = modules, .events = events, .requests = requests };
     }
 
@@ -210,7 +214,8 @@ pub const App = struct {
         self.events.deinit();
     }
 
-    pub fn addEntity(self: *Self, comptime T: type, comptime tracker: *TypeTracker, entity: T) !void {
+    pub fn addEntity(self: *Self, entity: anytype, comptime tracker: *TypeTracker) !void {
+        const T = @TypeOf(entity);
         const id = comptime tracker.getId(T);
 
         if (self.entities.items.len > id) {
@@ -224,19 +229,32 @@ pub const App = struct {
         }
     }
 
-    pub fn addSystem(self: *Self, comptime T: type, comptime tracker: *TypeTracker, system: *T) !void {
+    pub fn addSystem(self: *Self, system: anytype, comptime tracker: *TypeTracker) !void {
+        if (self.state != State.unstarted) {
+            unreachable;
+        }
+
+        const T = @typeInfo(@TypeOf(system)).Pointer.child;
         const closure = SystemClosure{ .run = @ptrCast(&T.run), .system = system, .target = comptime tracker.getId(T.Target) };
         try self.systems.append(closure);
     }
 
     pub fn addModule(self: *Self, comptime T: type) !void {
+        if (self.state != State.unstarted) {
+            unreachable;
+        }
+
         const module = try self.allocator.create(T);
         try module.init(self);
-        const closure = ModuleClosure{ .start = @ptrCast(&T.start), .deinit = @ptrCast(&T.deinit), .tick = @ptrCast(&T.tick), .module = module };
+        const closure = ModuleClosure{ .start = @ptrCast(&T.start), .deinit = @ptrCast(&T.deinit), .run = @ptrCast(&T.run), .module = module };
         try self.modules.append(closure);
     }
 
-    pub fn start(self: *Self) void {
+    pub fn start(self: *Self) !void {
+        try self.events.register(Self.handle_stop, self);
+
+        self.state = State.started;
+
         for (self.modules.items) |*m| {
             m.start(m.module);
         }
@@ -252,7 +270,7 @@ pub const App = struct {
 
     pub fn tick(self: *Self) void {
         for (self.modules.items) |*module| {
-            module.tick(module.module);
+            module.run(module.module);
         }
 
         for (self.systems.items) |*system| {
@@ -260,6 +278,18 @@ pub const App = struct {
                 system.run(system.system, entities);
             }
         }
+    }
+
+    pub fn run(self: *Self) void {
+        self.state = State.running;
+
+        while (self.state == State.running) {
+            self.tick();
+        }
+    }
+
+    fn handle_stop(self: *Self, _: *AppEvent.Stop) !void {
+        self.state = State.finished;
     }
 };
 

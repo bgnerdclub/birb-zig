@@ -24,38 +24,26 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = gpa.allocator();
 
-    var app = birb.App.init(allocator);
+    var app = try birb.App.init(allocator);
 
     {
         var i: u32 = 0;
         while (i < NUM_ENTITIES) {
-            try app.addEntity(Birb, &tracker, Birb{ .id = i });
+            try app.addEntity(Birb{ .id = i }, &tracker);
             i += 1;
         }
     }
 
     var birbSystem = BirbSystem{};
-    try app.addSystem(BirbSystem, &tracker, &birbSystem);
+    try app.addSystem(&birbSystem, &tracker);
     try app.addModule(birb.glfw.WindowModule);
 
-    app.start();
+    try app.start();
 
-    _ = try app.events.submit(birb.WindowEvent.SetTitle{ .title = "amazing window" });
+    try app.events.submit(birb.WindowEvent.SetTitle{ .title = "amazing window" });
     const responses = try app.requests.submit(birb.WindowEvent.GetWindow{});
     const window = responses.items[0];
     std.debug.print("Width: {d}, Height: {d}\n", .{ window.size[0], window.size[1] });
 
-    {
-        var i: u32 = 0;
-        const start = std.time.microTimestamp();
-        while (i < ITERATIONS) {
-            app.tick();
-            i += 1;
-        }
-        const end = std.time.microTimestamp();
-
-        std.debug.print("{d} iterations took {d}us", .{ ITERATIONS, end - start });
-    }
-
-    while (true) {}
+    app.run();
 }
